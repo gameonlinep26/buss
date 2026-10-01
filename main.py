@@ -1324,30 +1324,12 @@ def set_auth_cookie(
 # VLESS LINK GENERATION
 # ============================================================
 
-# Native sing-box listener ports are shared by all accounts.  The panel
+# Native relay backend listener ports are shared by all accounts.  The panel
 # stores credentials per UUID while the native core keeps one listener per
 # protocol.  This is what makes the "all protocols" subscription a single
 # account instead of creating unrelated accounts.
 def protocol_public_port(link: dict | None, protocol: str, fallback: int = DEFAULT_PORT) -> int:
-    if (link or {}).get("all_protocols") and protocol not in getattr(NATIVE_CORE, "SUPPORTED", ()):
-        return safe_int((link or {}).get("port", fallback), fallback, MIN_PORT, MAX_PORT)
-    if protocol in {"vless-ws", "xhttp-packet-up", "xhttp-stream-up", "xhttp-stream-one", "trojan-ws", "vmess-ws"}:
-        return safe_int((link or {}).get("port", fallback), fallback, MIN_PORT, MAX_PORT)
-    try:
-        adv_ports = ((link or {}).get("advanced") or {}).get("ports") or []
-        native_supported = list(getattr(NATIVE_CORE, "SUPPORTED", ()))
-        if adv_ports and protocol in native_supported:
-            if (link or {}).get("all_protocols"):
-                try: idx = native_supported.index(protocol)
-                except ValueError: idx = 0
-                if idx < len(adv_ports):
-                    return safe_int(adv_ports[idx], fallback, MIN_PORT, MAX_PORT)
-            else:
-                return safe_int(adv_ports[0], fallback, MIN_PORT, MAX_PORT)
-        ports = NATIVE_CORE.public_ports()  # type: ignore[name-defined]
-        return safe_int(ports.get(protocol, fallback), fallback, MIN_PORT, MAX_PORT)
-    except Exception:
-        return safe_int((link or {}).get("port", fallback), fallback, MIN_PORT, MAX_PORT)
+    return safe_int((link or {}).get("port", fallback), fallback, MIN_PORT, MAX_PORT)
 
 def generate_vless_link(
     uuid: str, host: str, remark: str = "ONEX",
@@ -1413,7 +1395,7 @@ def generate_vless_link(
         if adv["tls"].get("allow_insecure"): q["allowInsecure"] = "1"
         return "vless://" + uuid + "@" + host + ":" + str(port_value) + "?" + "&".join(f"{k}={quote(str(v), safe=',/') }" for k,v in q.items()) + "#" + label
     if protocol == "vmess-ws":
-        # Exact SideRail VMess-WS shape; traffic is piped to the local sing-box
+        # Exact SideRail VMess-WS shape; traffic is piped to the local relay backend
         # VMess listener which owns the VMess handshake (alterId 0 / AEAD).
         raw = {"v":"2","ps":remark,"add":host,"port":port_value,"id":uuid,"aid":0,"scy":"auto","net":"ws","type":"none","host":host,"path":"/siderail/vmess","tls":"tls","sni":host,"alpn":"http/1.1","fp":fp}
         return "vmess://" + base64.b64encode(json.dumps(raw,separators=(",",":"),ensure_ascii=False).encode()).decode()
@@ -1434,72 +1416,7 @@ def generate_vless_link(
         if adv["tls"].get("allow_insecure"):
             q["allowInsecure"] = "1"
         return "trojan://" + uuid + "@" + host + ":" + str(port_value) + "?" + "&".join(f"{k}={quote(str(v), safe=',/') }" for k,v in q.items()) + "#" + label
-    if protocol == "trojan":
-        mode = security if security in {"tls", "none"} else "tls"
-        q = {"security": mode, "sni": adv_sni}
-        if adv_alpn: q["alpn"] = adv_alpn
-        if adv["tls"].get("allow_insecure") or getattr(NATIVE_CORE, "self_signed", False): q["allowInsecure"] = "1"
-        net = str(adv["network"].get("type") or "tcp")
-        if net != "tcp":
-            q["type"] = net
-            if adv_path: q["path"] = adv_path
-            if adv_host: q["host"] = adv_host
-            if adv["host"].get("service_name"): q["serviceName"] = adv["host"]["service_name"]
-        return f"trojan://{uuid}@{host}:{port_value}?" + "&".join(f"{k}={quote(str(v), safe=',/') }" for k,v in q.items()) + "#" + label
-    if protocol == "vless-grpc-reality":
-        try:
-            reality = NATIVE_CORE.reality_info()  # type: ignore[name-defined]
-            custom_r = adv["tls"].get("reality") or {}
-            pbk = quote(str(custom_r.get("public_key") or reality.get("public_key", "")), safe="")
-            sid = quote(str(custom_r.get("short_id") or reality.get("short_id", "")), safe="")
-        except Exception:
-            pbk, sid = "", ""
-        service_name = adv["host"].get("service_name") or adv["network"].get("service_name") or "ONEX"
-        q = {"encryption":"none","security":"reality","type":"grpc","serviceName":service_name,"sni":adv_sni,"fp":adv_fp,"pbk":pbk,"sid":sid}
-        return "vless://" + uuid + "@" + host + ":" + str(port_value) + "?" + "&".join(f"{k}={quote(str(v), safe=',/')}" for k,v in q.items()) + "#" + label
-    if protocol == "shadowsocks":
-        method = str((adv.get("shadowsocks") or {}).get("method") or os.getenv("ONEX_SS_METHOD", "aes-256-gcm"))
-        userinfo = base64.urlsafe_b64encode(f"{method}:{uuid}".encode()).decode().rstrip("=")
-        return f"ss://{userinfo}@{host}:{port_value}#{label}"
     if protocol == "socks5": return f"socks5://{uuid}:{uuid}@{host}:{port_value}#{label}"
-    if protocol == "http":
-        scheme = "https" if security == "tls" else "http"
-        extra = f"?sni={quote(adv_sni)}" if scheme == "https" else ""
-        return f"{scheme}://{uuid}:{uuid}@{host}:{port_value}{extra}#{label}"
-    if protocol == "hysteria2":
-        insecure = 1 if (adv["tls"].get("allow_insecure") or getattr(NATIVE_CORE, "self_signed", False)) else 0
-        q = {"sni": adv_sni, "insecure": insecure}
-        hy = adv.get("hysteria2") or {}
-        if hy.get("obfs_password"): q["obfs"] = hy.get("obfs_type") or "salamander"; q["obfs-password"] = hy.get("obfs_password")
-        return f"hysteria2://{uuid}@{host}:{port_value}/?" + "&".join(f"{k}={quote(str(v), safe=',/') }" for k,v in q.items()) + "#" + label
-    if protocol == "vless-reality":
-        try:
-            reality = NATIVE_CORE.reality_info()  # type: ignore[name-defined]
-            custom_r = adv["tls"].get("reality") or {}
-            pbk = quote(str(custom_r.get("public_key") or reality.get("public_key", "")), safe="")
-            sid = quote(str(custom_r.get("short_id") or reality.get("short_id", "")), safe="")
-        except Exception:
-            pbk, sid = "", ""
-        q = {"encryption":"none","security":"reality","type":"tcp","sni":adv_sni,"fp":adv_fp,"pbk":pbk,"sid":sid}
-        return "vless://" + uuid + "@" + host + ":" + str(port_value) + "?" + "&".join(f"{k}={quote(str(v), safe=',/') }" for k,v in q.items()) + "#" + label
-    if protocol == "vmess":
-        raw = {"v":"2","ps":remark,"add":host,"port":port_value,"id":uuid,"aid":0,"scy":"auto","net":"tcp","type":"none","host":"","path":"","tls":"tls","sni":adv_sni,"fp":adv_fp}
-        return "vmess://" + base64.b64encode(json.dumps(raw,separators=(",",":"),ensure_ascii=False).encode()).decode()
-    if protocol == "tuic":
-        return f"tuic://{uuid}:{uuid}@{host}:{port_value}?sni={quote(adv_sni)}&alpn=h3&congestion_control=bbr#" + label
-    if protocol == "anytls":
-        insecure = 1 if (adv["tls"].get("allow_insecure") or getattr(NATIVE_CORE, "self_signed", False)) else 0
-        return f"anytls://{uuid}@{host}:{port_value}?sni={quote(adv_sni)}&insecure={insecure}#" + label
-    if protocol == "naive":
-        return f"naive+https://{quote(uuid)}:{quote(uuid)}@{host}:{port_value}/?sni={quote(adv_sni)}#" + label
-    if protocol == "shadowtls":
-        hs = quote(str(os.getenv("ONEX_SHADOWTLS_HANDSHAKE", adv_sni or host)))
-        return f"shadowtls://{uuid}@{host}:{port_value}?version=3&sni={hs}#" + label
-    if protocol == "snell":
-        return f"snell://{uuid}@{host}:{port_value}?version=5#" + label
-    if protocol == "hysteria":
-        insecure = 1 if (adv["tls"].get("allow_insecure") or getattr(NATIVE_CORE, "self_signed", False)) else 0
-        return f"hysteria://{uuid}@{host}:{port_value}/?sni={quote(adv_sni)}&insecure={insecure}#" + label
     if protocol == "tuic": return f"tuic://{uuid}:{uuid}@{host}:{port_value}?sni={quote(host)}&alpn=h3#{label}"
     return f"vless://{uuid}@{host}:{port_value}"
 
@@ -2187,11 +2104,6 @@ async def set_link_active(
         record = LINKS[uid]
 
     await save_state()
-    if NATIVE_CORE and not await sync_native_core():
-        async with LINKS_LOCK:
-            LINKS[uid]["active"] = not bool(active)
-        await save_state()
-        raise HTTPException(409, NATIVE_CORE.last_error or "Native runtime reload failed; previous state restored")
 
     if SIDERAIL_CORE:
         asyncio.create_task(sync_siderail_core())
@@ -3845,19 +3757,6 @@ async def create_link_api(
         ),
         "ok": True,
     }
-    native_relevant = bool(NATIVE_CORE and (not all_protocols) and protocol in getattr(NATIVE_CORE, "SUPPORTED", ()))
-    if native_relevant:
-        if not await sync_native_core():
-            async with LINKS_LOCK:
-                LINKS.pop(uid, None)
-            await save_state()
-            raise HTTPException(409, NATIVE_CORE.last_error or "Native listener deployment failed")
-        # Re-read the record so generated Reality public key / runtime ports are current.
-        async with LINKS_LOCK:
-            link = deepcopy(LINKS.get(uid) or link)
-        result = {**get_link_info(link, uid, host), "ok": True}
-    elif NATIVE_CORE:
-        asyncio.create_task(sync_native_core())
     if all_protocols:
         result["all_protocols"] = True
         result["protocol_count"] = len(RAILWAY_SUB_PROTOCOLS)
@@ -3910,8 +3809,6 @@ async def create_auto_link(
     )
     link["security_profile"] = profile
     result = {**get_link_info(link, uid, host), "ok": True, "profile": profile}
-    if NATIVE_CORE:
-        asyncio.create_task(sync_native_core())
     if all_protocols:
         result["all_protocols"] = True
         result["protocol_count"] = len(RAILWAY_SUB_PROTOCOLS)
@@ -3926,11 +3823,9 @@ async def create_auto_link(
 @app.get("/api/protocols")
 async def api_protocols(request: Request):
     require_auth(request)
-    native_ready = bool(NATIVE_CORE and getattr(NATIVE_CORE, "is_runtime_ready", lambda: False)())
     return {
-        "protocols": [{"id": p, "label": PROTOCOL_LABELS.get(p, p), "backend": "native" if p in getattr(NATIVE_CORE, "SUPPORTED", ()) else "panel"} for p in PROTOCOLS],
+        "protocols": [{"id": p, "label": PROTOCOL_LABELS.get(p, p), "backend": "relay"} for p in PROTOCOLS],
         "default": PROTOCOLS[0] if PROTOCOLS else DEFAULT_PROTOCOL,
-        "native_core": {"installed": bool(NATIVE_CORE and NATIVE_CORE.binary_exists()), "running": native_ready, "error": getattr(NATIVE_CORE, "last_error", "") if NATIVE_CORE else ""},
     }
 
 @app.get("/api/ad-blocker")
@@ -3956,8 +3851,6 @@ async def update_ad_blocker(request: Request, _=Depends(require_auth)):
     AD_BLOCKER["enabled"] = bool(body.get("enabled", AD_BLOCKER.get("enabled")))
     AD_BLOCKER["domains"] = domains
     await save_state()
-    if NATIVE_CORE:
-        asyncio.create_task(sync_native_core())
     if SIDERAIL_CORE:
         asyncio.create_task(sync_siderail_core())
     return {"ok": True, **AD_BLOCKER}
@@ -3968,22 +3861,8 @@ async def update_ad_blocker(request: Request, _=Depends(require_auth)):
 # ============================================================
 
 def _advanced_capabilities(protocol: str) -> dict:
-    native = bool(NATIVE_CORE and protocol in getattr(NATIVE_CORE, "SUPPORTED", ()))
-    common = {
-        "tls": protocol not in {"shadowsocks", "socks5"},
-        "reality": protocol == "vless-grpc-reality",
-        "sni": protocol not in {"shadowsocks", "socks5"},
-        "alpn": protocol not in {"shadowsocks", "socks5"},
-        "fingerprint": True,
-        "ports": True,
-        "listener": native,
-        "routing": native,
-        "sniffing": native,
-        "custom_headers": protocol in {"trojan", "vless-grpc-reality"},
-        "transport": native,
-        "client_only": True,
-    }
-    return {"native": native, "supported": common}
+    common = {"tls": True, "reality": False, "sni": True, "alpn": True, "fingerprint": True, "ports": True, "listener": False, "routing": False, "sniffing": False, "custom_headers": protocol in {"trojan-ws"}, "transport": False, "client_only": True}
+    return {"native": False, "supported": common}
 
 
 @app.get("/api/advanced/capabilities")
@@ -4009,7 +3888,6 @@ def railway_endpoint_info(protocol: str) -> dict:
         tcp_port = 0
     websocket_ready = bool(domain)
     tcp_ready = bool(tcp_host and 1 <= tcp_port <= 65535)
-    native = bool(NATIVE_CORE and protocol in getattr(NATIVE_CORE, "SUPPORTED", ()))
     return {
         "railway": bool(os.environ.get("RAILWAY_ENVIRONMENT_ID") or domain),
         "domain": domain,
@@ -4017,7 +3895,6 @@ def railway_endpoint_info(protocol: str) -> dict:
         "tcp_host": tcp_host,
         "tcp_port": tcp_port,
         "tcp_ready": tcp_ready,
-        "native": native,
     }
 
 
@@ -4069,10 +3946,7 @@ async def validate_advanced_config(request: Request, token=Depends(require_auth)
     if advanced["network"]["type"] in {"kcp", "quic", "xhttp"} and protocol not in {"trojan", "vless-grpc-reality"}: warnings.append("این Transport در این پروتکل به Listener بومی قابل تبدیل نیست")
     if advanced["fingerprint"]["enabled"] and advanced["tls"]["mode"] == "none": warnings.append("Fingerprint یک تنظیم کلاینتی است و بدون TLS/uTLS اثری ندارد")
     if advanced["routing"].get("proxy_protocol"): warnings.append("Proxy Protocol در این نسخه به Listener تزریق نمی‌شود")
-    if advanced["host"].get("authority"): warnings.append("Authority در Listener native sing-box اعمال نمی‌شود و فقط metadata کلاینت است")
-    if protocol not in getattr(NATIVE_CORE, "SUPPORTED", ()):
-        warnings.append("این پروتکل توسط relay/XHTTP پنل اجرا می‌شود؛ تنظیمات Listener بومی sing-box برای آن اعمال نمی‌شود")
-    native = bool(NATIVE_CORE and protocol in getattr(NATIVE_CORE, "SUPPORTED", ()))
+    if advanced["host"].get("authority"): warnings.append("Authority در Listener native relay backend اعمال نمی‌شود و فقط metadata کلاینت است")
     railway = railway_endpoint_info(protocol)
     if railway["railway"]:
         if protocol in {"vless-ws", "xhttp-packet-up", "xhttp-stream-up", "xhttp-stream-one"} and not railway["websocket_ready"]:
@@ -4080,14 +3954,7 @@ async def validate_advanced_config(request: Request, token=Depends(require_auth)
         if native and not railway["tcp_ready"]:
             warnings.append("این پروتکل Native است؛ برای دسترسی مستقیم از Railway باید TCP Proxy و ONEX_RAILWAY_TCP_HOST/ONEX_RAILWAY_TCP_PORT تنظیم شود")
     preview = None
-    if not errors and native:
-        try:
-            sample = {"preview": True, "active": True, "protocol": protocol, "advanced": advanced, "port": (advanced.get("ports") or [DEFAULT_PORT])[0], "fingerprint": advanced["fingerprint"]["value"], "all_protocols": False}
-            preview = await NATIVE_CORE.build_config({"preview": sample}, get_host(request))
-            ok, detail = await NATIVE_CORE.validate_config(preview)
-            if not ok: errors.append(detail or "sing-box config validation failed")
-        except Exception as exc: warnings.append(f"پیش‌نمایش Native انجام نشد: {exc}")
-    return {"ok": not errors, "protocol": protocol, "native": native, "errors": errors, "warnings": warnings, "advanced": advanced, "preview": preview, "railway": railway}
+    return {"ok": not errors, "protocol": protocol, "native": False, "errors": errors, "warnings": warnings, "advanced": advanced, "preview": preview, "railway": railway}
 
 
 @app.get("/api/links")
@@ -4252,15 +4119,6 @@ async def delete_all_links(_=Depends(require_auth)):
 
     await save_state()
 
-    if NATIVE_CORE and not await sync_native_core():
-        async with LINKS_LOCK:
-            LINKS.clear()
-            LINKS.update(previous_links)
-        async with SUBS_LOCK:
-            SUBS.clear()
-            SUBS.update(previous_subs)
-        await save_state()
-        raise HTTPException(409, NATIVE_CORE.last_error or "Native runtime reload failed; previous configuration restored")
 
     deleted = len(previous_links)
     log_activity("link", f"حذف همه کانفیگ‌ها · {deleted} مورد", "warn")
@@ -4639,15 +4497,6 @@ async def update_link(
 
     await save_state()
 
-    native_relevant = bool(NATIVE_CORE and (not link.get("all_protocols")) and link.get("protocol") in getattr(NATIVE_CORE, "SUPPORTED", ()))
-    if native_relevant and not await sync_native_core():
-        async with LINKS_LOCK:
-            LINKS[uid] = previous_link
-        await save_state()
-        raise HTTPException(409, NATIVE_CORE.last_error or "Native listener deployment failed; previous configuration restored")
-    elif NATIVE_CORE:
-        asyncio.create_task(sync_native_core())
-
     log_activity(
         "link",
         (
@@ -4809,14 +4658,6 @@ async def delete_link(
     if previous is None:
         raise HTTPException(status_code=404, detail="link not found")
     label = await remove_link(uid)
-    if NATIVE_CORE and not await sync_native_core():
-        async with LINKS_LOCK:
-            LINKS[uid] = previous
-        async with SUBS_LOCK:
-            SUBS.clear(); SUBS.update(previous_subs)
-        await save_state()
-        raise HTTPException(409, NATIVE_CORE.last_error or "Native runtime reload failed; previous state restored")
-
     return {
         "ok": True,
         "deleted": uid,
@@ -4856,7 +4697,7 @@ def subscription_metadata_headers(used_bytes: int, limit_bytes: int, expires_at,
 # ============================================================
 
 _SUB_CLIENT_MARKERS = (
-    "v2ray", "xray", "sing-box", "singbox", "clash", "mihomo", "stash", "hiddify",
+    "v2ray", "xray", "relay backend", "singbox", "clash", "mihomo", "stash", "hiddify",
     "nekobox", "nekoray", "streisand", "shadowrocket", "quantumult", "surge", "loon",
     "foxray", "v2box", "happ", "karing", "okhttp", "dart", "flclash", "throne",
 )
@@ -7185,18 +7026,7 @@ async def get_connections(
 
 
 # ============================================================
-# NATIVE PROTOCOL CORE (sing-box)
-# ============================================================
-
-try:
-    from onex.core.native_core import NativeCore, _protocol_safe_advanced
-    NATIVE_CORE = NativeCore(DATA_DIR)
-    logger.info("Native sing-box backend loaded for compatibility; ONEX VIP exposes relay protocols only")
-except Exception as exc:
-    NATIVE_CORE = None
-    logger.warning("Native protocol backend unavailable: %s", exc)
-
-
+# Native relay backend runtime removed. ONEX uses relay/SideRail backends only.
 try:
     from onex.core.siderail_core import SiderailCore
     SIDERAIL_CORE = SiderailCore(DATA_DIR)
@@ -7239,68 +7069,6 @@ async def api_siderail_status(request: Request, token=Depends(require_auth)):
     return {"ok": True, **SIDERAIL_CORE.status()}
 
 
-async def sync_native_core():
-    if not NATIVE_CORE:
-        return False
-    try:
-        NATIVE_CORE.ad_blocker = deepcopy(AD_BLOCKER)
-        return await NATIVE_CORE.sync(LINKS, CONFIG.get("host") or os.getenv("RAILWAY_PUBLIC_DOMAIN", "localhost"))
-    except Exception as exc:
-        logger.warning("Native core sync failed: %s", exc)
-        return False
-
-
-@app.on_event("startup")
-async def start_native_core():
-    if NATIVE_CORE:
-        asyncio.create_task(sync_native_core())
-
-
-@app.get("/api/native/status")
-async def api_native_status(request: Request, token=Depends(require_auth)):
-    if not NATIVE_CORE:
-        return {"ok": False, "installed": False, "running": False, "error": "Native core unavailable"}
-    return {"ok": True, "installed": NATIVE_CORE.binary_exists(), **NATIVE_CORE.status()}
-
-
-@app.get("/api/native/config")
-async def api_native_config(request: Request, token=Depends(require_auth)):
-    if not NATIVE_CORE:
-        raise HTTPException(503, "Native core unavailable")
-    config = NATIVE_CORE.current_config()
-    raw = str(request.query_params.get("raw") or "").lower() in {"1", "true", "yes"}
-    meta = get_session_meta(token)
-    if raw and meta.get("role") != "owner":
-        raise HTTPException(403, "raw native config is owner-only")
-    if not raw:
-        config = NATIVE_CORE._redact_config(config)
-    return {"ok": True, "config": config, "redacted": not raw}
-
-
-@app.post("/api/native/validate")
-async def api_native_validate(request: Request, token=Depends(require_auth)):
-    if not NATIVE_CORE:
-        raise HTTPException(503, "Native core unavailable")
-    body = await request.json()
-    config = body.get("config") if isinstance(body, dict) else None
-    if not isinstance(config, dict):
-        raise HTTPException(400, "config must be an object")
-    ok, detail = await NATIVE_CORE.validate_config(config)
-    return {"ok": ok, "detail": detail}
-
-
-@app.post("/api/native/reload")
-async def api_native_reload(request: Request, token=Depends(require_auth)):
-    if not NATIVE_CORE:
-        raise HTTPException(503, "Native core unavailable")
-    host = get_host(request)
-    ok = await sync_native_core()
-    if not ok:
-        raise HTTPException(409, NATIVE_CORE.last_error or "Native reload failed")
-    await save_state()
-    return {"ok": True, "host": host, "status": NATIVE_CORE.status()}
-
-
 @app.post("/api/links/{uid}/advanced/reset")
 async def reset_link_advanced(uid: str, request: Request, token=Depends(require_auth)):
     async with LINKS_LOCK:
@@ -7314,14 +7082,6 @@ async def reset_link_advanced(uid: str, request: Request, token=Depends(require_
         link["alpn"] = link["advanced"]["tls"].get("alpn") or link.get("alpn") or ""
         snapshot = deepcopy(link)
     await save_state()
-    if NATIVE_CORE and (not snapshot.get("all_protocols")) and snapshot.get("protocol") in getattr(NATIVE_CORE, "SUPPORTED", ()):
-        if not await sync_native_core():
-            async with LINKS_LOCK:
-                LINKS[uid] = previous
-            await save_state()
-            raise HTTPException(409, NATIVE_CORE.last_error or "Native reset deployment failed; previous configuration restored")
-    elif NATIVE_CORE:
-        asyncio.create_task(sync_native_core())
     return {"ok": True, "link": snapshot}
 
 
@@ -7509,7 +7269,7 @@ if "vless-httpupgrade" not in PROTOCOLS and "vless-ws" in PROTOCOLS:
     PROTOCOLS.append("vless-httpupgrade")
 
 if "vmess-ws" not in PROTOCOLS:
-    # VMess-WS is served by the SideRail sing-box core behind the front proxy.
+    # VMess-WS is served by the SideRail relay backend core behind the front proxy.
     PROTOCOLS.append("vmess-ws")
 
 # Keep the panel/backend protocol order stable: the existing Railway-safe
@@ -8873,19 +8633,7 @@ async def api_system_metrics(_=Depends(require_auth)):
         "python": platform.python_version(),
         "region": os.getenv("RAILWAY_REPLICA_REGION") or os.getenv("RAILWAY_REGION") or os.getenv("ONEX_REGION") or None,
         "public_domain": os.getenv("RAILWAY_PUBLIC_DOMAIN") or None,
-        "singbox_version": None,
-        "native_running": None,
     }
-    try:
-        from onex.core.native_core import VERSION as _SB_VERSION
-        out["singbox_version"] = _SB_VERSION
-    except Exception:
-        pass
-    try:
-        if NATIVE_CORE:
-            out["native_running"] = bool(NATIVE_CORE.status().get("running"))
-    except Exception:
-        pass
 
     cpu1 = net1 = None
     try:
@@ -10295,7 +10043,7 @@ html.light .onex-topbar-brand{background:#fff;border-color:rgba(var(--accent-rgb
   <p><span data-i18n="home_last">آخرین بروزرسانی</span> <b class="mono" id="lastUpd">--:--:--</b></p>
   <div class="versions">
     <div class="version"><span data-i18n="home_ver_panel">نسخه پنل</span> <b id="homePanelVer">v__ONEX_VERSION__</b></div>
-    <div class="version"><span data-i18n="home_ver_core">هسته</span> <b id="homeCoreVer">sing-box</b></div>
+    <div class="version"><span data-i18n="home_ver_core">هسته</span> <b id="homeCoreVer">Relay</b></div>
     <div class="version"><span data-i18n="home_core_state">وضعیت هسته</span> <b id="homeCoreState">—</b></div>
   </div>
   <div class="alert" id="homeAlert" hidden>⚠ <span id="homeAlertText"></span><button type="button" onclick="homeShowExpiring()" data-i18n="home_alert_btn">مشاهده</button></div>
@@ -10565,7 +10313,7 @@ html.light #page-configs .ocx-menu{background:color-mix(in srgb,var(--o-a) 6%,rg
       </button>
 
       <div id="advancedConfigPanel" class="advanced-config-panel" hidden>
-        <div class="advanced-note"><span>✦</span><div><b>کنترل دستی کامل</b><small>هر گزینه یا به Listener واقعی sing-box اعمال می‌شود یا در اعتبارسنجی به‌عنوان کلاینت‌محور/پشتیبانی‌نشده مشخص می‌شود. قبل از ذخیره، اعتبارسنجی و Preview را اجرا کنید.</small></div></div>
+        <div class="advanced-note"><span>✦</span><div><b>کنترل دستی کامل</b><small>هر گزینه یا به Listener واقعی relay backend اعمال می‌شود یا در اعتبارسنجی به‌عنوان کلاینت‌محور/پشتیبانی‌نشده مشخص می‌شود. قبل از ذخیره، اعتبارسنجی و Preview را اجرا کنید.</small></div></div>
 
         <div class="advanced-section">
           <div class="advanced-section-head"><span class="advanced-section-icon">🔐</span><div><b>TLS / Reality</b><small>امنیت اتصال و مشخصات TLS</small></div></div>
@@ -13543,7 +13291,7 @@ function loadAdvancedDraft(){try{const raw=localStorage.getItem('onex_advanced_d
 function copyAdvancedJson(){copyText(JSON.stringify(advancedFormObject(),null,2))}
 let __advancedPreview = null;
 function setAdvancedValidation(kind, html){const el=document.getElementById('advancedValidationStatus');if(!el)return;el.className='advanced-validation-status '+kind;el.innerHTML=html;}
-async function validateAdvancedConfig(showPreview=false){const protocol=document.getElementById('cProto')?.value||'';const advanced=advancedFormObject();setAdvancedValidation('warn',lang==='fa'?'در حال اعتبارسنجی...':'Validating...');const r=await api('/api/advanced/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({protocol,advanced})});if(!r){setAdvancedValidation('err',lang==='fa'?'اعتبارسنجی انجام نشد':'Validation failed');return false}const parts=[];if(r.ok)parts.push('✓ '+(lang==='fa'?'تنظیمات معتبر است':'Configuration is valid'));if(r.native)parts.push('• '+(lang==='fa'?'Native sing-box فعال است':'Native sing-box is available'));(r.warnings||[]).forEach(x=>parts.push('⚠ '+esc(x)));(r.errors||[]).forEach(x=>parts.push('✕ '+esc(x)));setAdvancedValidation(r.ok?(r.warnings?.length?'warn':'ok'):'err',parts.join('<br>'));__advancedPreview=r.preview||null;const box=document.getElementById('advancedPreviewBox'),pre=document.getElementById('advancedPreviewCode');if(box&&pre){box.hidden=!showPreview||!__advancedPreview;if(__advancedPreview)pre.textContent=JSON.stringify(__advancedPreview,null,2)}await loadAdvancedCapabilities(protocol);return !!r.ok}
+async function validateAdvancedConfig(showPreview=false){const protocol=document.getElementById('cProto')?.value||'';const advanced=advancedFormObject();setAdvancedValidation('warn',lang==='fa'?'در حال اعتبارسنجی...':'Validating...');const r=await api('/api/advanced/validate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({protocol,advanced})});if(!r){setAdvancedValidation('err',lang==='fa'?'اعتبارسنجی انجام نشد':'Validation failed');return false}const parts=[];if(r.ok)parts.push('✓ '+(lang==='fa'?'تنظیمات معتبر است':'Configuration is valid'));if(r.native)parts.push('• '+(lang==='fa'?'Native relay backend فعال است':'Native relay backend is available'));(r.warnings||[]).forEach(x=>parts.push('⚠ '+esc(x)));(r.errors||[]).forEach(x=>parts.push('✕ '+esc(x)));setAdvancedValidation(r.ok?(r.warnings?.length?'warn':'ok'):'err',parts.join('<br>'));__advancedPreview=r.preview||null;const box=document.getElementById('advancedPreviewBox'),pre=document.getElementById('advancedPreviewCode');if(box&&pre){box.hidden=!showPreview||!__advancedPreview;if(__advancedPreview)pre.textContent=JSON.stringify(__advancedPreview,null,2)}await loadAdvancedCapabilities(protocol);return !!r.ok}
 async function loadAdvancedCapabilities(protocol){const r=await api('/api/advanced/capabilities?protocol='+encodeURIComponent(protocol||''));const el=document.getElementById('advancedCapabilityStatus');if(!el||!r)return;const labels={tls:'TLS',reality:'Reality',sni:'SNI',alpn:'ALPN',fingerprint:'Fingerprint',ports:'چند پورت',listener:'Listener',routing:'Routing',sniffing:'Sniffing',custom_headers:'Headers'};el.innerHTML=Object.entries(r.supported||{}).map(([k,v])=>(v?'✓ ':'✕ ')+(labels[k]||k)+(v?' · پشتیبانی':' · اعمال نمی‌شود')).join(' &nbsp; | &nbsp; ');el.className='advanced-validation-status '+(r.native?'ok':'warn');el.style.display='block'}
 function copyAdvancedPreview(){if(__advancedPreview)copyText(JSON.stringify(__advancedPreview,null,2));}
 let __configEditUid='';let __configEditOriginalExpiresAt=null;let __configEditOriginalDays=0;
@@ -14128,7 +13876,7 @@ async function loadProtocols(){
   setupProtocolPickers();
   const bundle=document.getElementById('protocolBundleOptions');
   if(bundle){
-    const ids=['vless-ws','siderail-vless-xhttp','xhttp-packet-up','xhttp-stream-up','vmess-ws','trojan-ws'].filter(id=>list.some(p=>p.id===id));
+    const ids=['vless-ws','siderail-vless-xhttp','xhttp-packet-up','xhttp-stream-up','xhttp-stream-one','vmess-ws','trojan-ws'].filter(id=>list.some(p=>p.id===id));
     bundle.innerHTML=ids.map(id=>`<label class="cfgx-chip"><input type="checkbox" value="${id}"><img src="${PROTOCOL_ICON_DATA[id]||PROTOCOL_ICON_DATA['vless-ws']}" alt="" loading="lazy" decoding="async"><b>${esc(protocolPickerShort(id))}</b><em>اصلی</em><i aria-hidden="true"></i></label>`).join('');
     if(window.cfgxSync)window.cfgxSync();
   }
@@ -14727,7 +14475,7 @@ window.addEventListener('storage',e=>{if(e.key==='onex_theme_v2')loadOnexTheme()
   function renderHero(){
     const u=H.me&&H.me.username;set('homeUser',u?(fa()?'، ':', ')+u:'');
     set('lastUpd',new Date().toLocaleTimeString(fa()?'fa-IR':'en-US'));
-    if(H.sys&&H.sys.singbox_version)set('homeCoreVer','sing-box '+H.sys.singbox_version);
+    
     const st=$('homeCoreState');
     if(st){const n=H.native;let txt='—',c='';
       if(n){if(n.running){txt=fa()?'فعال':'Running';c='ok'}else if(n.installed===false){txt=fa()?'نصب نشده':'Not installed';c='warn'}else{txt=fa()?'متوقف':'Stopped';c='bad'}}
@@ -14771,7 +14519,7 @@ window.addEventListener('storage',e=>{if(e.key==='onex_theme_v2')loadOnexTheme()
     const dk=$('homeDisk');if(dk&&y.disk_used_bytes)dk.title=fmtB(y.disk_used_bytes)+' / '+fmtB(y.disk_total_bytes);
     set('homeHost',location.host||'—');
     set('homeDomain',y.public_domain||location.hostname||'—');
-    set('homeCore',y.singbox_version?('sing-box '+y.singbox_version):'—');
+    set('homeCore','Relay');
     set('homeRegion',y.region||'—');
     set('homeOs',y.platform||'—');
   }
@@ -14845,7 +14593,7 @@ window.addEventListener('storage',e=>{if(e.key==='onex_theme_v2')loadOnexTheme()
     try{
       const now=Date.now(),tasks=[jget('/api/links'),jget('/stats'),jget('/api/system/metrics')];
       tasks.push(!H.me?jget('/api/me'):Promise.resolve(H.me));
-      tasks.push(now-H.lastNative>20000?jget('/api/native/status'):Promise.resolve(H.native));
+      tasks.push(Promise.resolve(null));
       const [links,stats,sys,me,native]=await Promise.all(tasks);
       if(links){H.links=Array.isArray(links.links)?links.links:(Array.isArray(links)?links:[]);}
       if(stats)H.stats=stats; if(sys)H.sys=sys; if(me)H.me=me;
@@ -15020,7 +14768,7 @@ html.light #cfgx .advanced-section{background:color-mix(in srgb, rgb(23 23 23 / 
 (function(){
   'use strict';
   var $=function(id){return document.getElementById(id)};
-  var MAIN=['vless-ws','siderail-vless-xhttp','xhttp-packet-up','xhttp-stream-up','vmess-ws','trojan-ws'];
+  var MAIN=['vless-ws','siderail-vless-xhttp','xhttp-packet-up','xhttp-stream-up','xhttp-stream-one','vmess-ws','trojan-ws'];
   function h(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
   function nameOf(id){try{return protocolPickerShort(id)}catch(e){return id}}
   function iconOf(id){try{return PROTOCOL_ICON_DATA[id]||PROTOCOL_ICON_DATA['vless-ws']}catch(e){return ''}}
