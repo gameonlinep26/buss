@@ -21,8 +21,10 @@ from main import (
     logger,
     is_link_allowed,
     is_ip_allowed,
+    is_connection_allowed,
     save_state,
     is_destination_blocked,
+    is_destination_safe,
 )
 from onex.core.vless_relay import parse_vless_header, check_and_use
 from onex.core.traffic_limiter import throttle
@@ -192,7 +194,7 @@ async def _open_tcp_from_header(first_chunk: bytes):
     # confusing client-side latency failures.
     if command != 1:
         raise ValueError(f"unsupported VLESS command: {command}")
-    if is_destination_blocked(address):
+    if is_destination_blocked(address) or not await is_destination_safe(address, port):
         raise HTTPException(status_code=403, detail="blocked destination")
     reader, writer = await asyncio.wait_for(
         asyncio.open_connection(address, port), timeout=TCP_CONNECT_TIMEOUT
@@ -220,6 +222,8 @@ async def _get_or_create_session(uuid: str, mode: str, session_id: str, ip: str 
 
         async with LINKS_LOCK:
             link = LINKS.get(uuid)
+        if not is_connection_allowed(link, uuid):
+            raise HTTPException(status_code=429, detail="connection limit reached")
         if not is_ip_allowed(link, uuid, ip):
             logger.warning(f"🚫 XHTTP[{mode}] rejected uuid={uuid[:8]} ip={ip} (ip limit reached)")
             raise HTTPException(status_code=403, detail="ip limit reached")
@@ -592,6 +596,8 @@ async def _stream_one_uplink_iter(session_id: str, uuid: str, sess: dict, iterat
             command, address, port, payload = await parse_vless_header(bytes(header_buf))
             if command != 1:
                 raise ValueError(f"unsupported VLESS command: {command}")
+            if not await is_destination_safe(address, port):
+                raise ValueError("blocked destination")
             reader, writer = await asyncio.wait_for(asyncio.open_connection(address, port), timeout=TCP_CONNECT_TIMEOUT)
             _tune_socket(writer)
             sess["writer"] = writer

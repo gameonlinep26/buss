@@ -21,9 +21,11 @@ from main import (
     logger,
     is_link_allowed,
     is_ip_allowed,
+    is_connection_allowed,
     log_activity,
     now_ir,
     is_destination_blocked,
+    is_destination_safe,
 )
 from onex.core.traffic_limiter import throttle
 
@@ -264,6 +266,9 @@ async def websocket_tunnel(ws: WebSocket, uuid: str):
         return
 
     ip = _ws_client_ip(ws)
+    if not is_connection_allowed(link, uuid):
+        await ws.close(code=1008, reason="connection limit reached")
+        return
     if not is_ip_allowed(link, uuid, ip):
         logger.warning(f"🚫 WS rejected uuid={uuid[:8]}… ip={ip} (ip limit reached)")
         log_activity("connection", f"اتصال {ip} به کانفیگ «{link.get('label','?')}» رد شد (محدودیت تعداد آی‌پی)", "warn")
@@ -324,8 +329,8 @@ async def websocket_tunnel(ws: WebSocket, uuid: str):
         stats["total_requests"] += 1
         connections[conn_id]["bytes"] += len(first_chunk)
         logger.info(f"➡️  [{conn_id}] → {address}:{port}")
-        if is_destination_blocked(address, link):
-            logger.info(f"🚫 blocked destination [{conn_id}] → {address}")
+        if is_destination_blocked(address, link) or not await is_destination_safe(address, port):
+            logger.info(f"🚫 blocked/unsafe destination [{conn_id}] → {address}:{port}")
             await ws.close(code=1008, reason="blocked destination")
             return
 

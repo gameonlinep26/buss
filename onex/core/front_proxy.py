@@ -123,6 +123,9 @@ async def _httpupgrade_relay(path: str, upgrade_value: str, head: bytes, client_
         client_w.close()
         return
     ip = ctx.get("client_ip", "unknown")
+    if not ctx["is_connection_allowed"](link, uuid):
+        client_w.close()
+        return
     if not ctx["is_ip_allowed"](link, uuid, ip):
         client_w.close()
         return
@@ -159,12 +162,14 @@ async def _httpupgrade_relay(path: str, upgrade_value: str, head: bytes, client_
         command, address, port, payload = parse_vless_header(first)
         if command != 1:
             raise ValueError("unsupported command")
-        if ctx["is_blocked"](address, link):
+        if ctx["is_blocked"](address, link) or not await ctx["is_destination_safe"](address, port):
             raise PermissionError("blocked destination")
         if not await quota(len(first)):
             raise PermissionError("quota")
         await ctx["throttle"](uuid, len(first))
 
+        if not await ctx["is_destination_safe"](address, port):
+            raise PermissionError("blocked destination")
         up_r, up_w = await asyncio.wait_for(asyncio.open_connection(address, port), timeout=CONNECT_TIMEOUT)
         if payload:
             up_w.write(payload)
