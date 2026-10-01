@@ -6,6 +6,9 @@
 # wins, and a broken update is abandoned after 3 failed boots.
 # ============================================================
 import os as _ob_os, sys as _ob_sys, json as _ob_json
+import asyncio
+import ipaddress
+import socket
 from pathlib import Path as _ob_Path
 
 
@@ -354,6 +357,32 @@ def is_ad_block_enabled_for_link(link: dict | None) -> bool:
     return bool((link or {}).get("ad_block_enabled", AD_BLOCKER.get("enabled")))
 
 
+def _unsafe_destination_ip(value: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(str(value).strip().strip("[]"))
+        return bool(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+    except ValueError:
+        return False
+
+
+async def is_destination_safe(address: str, port: int) -> bool:
+    """Reject private/local destinations and DNS rebinding before dialing."""
+    host = str(address or "").strip().rstrip(".")
+    try:
+        p = int(port)
+    except Exception:
+        return False
+    if not host or not 1 <= p <= 65535 or p in {25, 465, 587, 3306, 5432, 6379, 9200, 11211, 27017}:
+        return False
+    if host.lower() in {"localhost", "localhost.localdomain", "ip6-localhost"} or _unsafe_destination_ip(host):
+        return False
+    try:
+        rows = await asyncio.to_thread(socket.getaddrinfo, host, p, type=socket.SOCK_STREAM)
+    except Exception:
+        return False
+    return bool(rows) and all(not _unsafe_destination_ip(row[4][0]) for row in rows)
+
+
 def is_destination_blocked(address: str, link: dict | None = None) -> bool:
     if not is_ad_block_enabled_for_link(link):
         return False
@@ -390,10 +419,11 @@ PROTOCOLS: list[str] = []
 
 # The "all protocols in one subscription" switch is intentionally Railway-only.
 # VPS/native protocols remain individually selectable and individually deployable.
-RAILWAY_SUB_PROTOCOLS = (
+ONEX_VIP_PROTOCOLS = (
     "vless-ws", "siderail-vless-xhttp", "xhttp-packet-up", "xhttp-stream-up",
     "vmess-ws", "trojan-ws",
 )
+RAILWAY_SUB_PROTOCOLS = ONEX_VIP_PROTOCOLS
 
 # Same names the panel shows on the protocol cards.
 PROTOCOL_SUB_NAMES = {
@@ -912,6 +942,19 @@ def client_ip(
         return request.client.host
 
     return "unknown"
+
+
+def is_connection_allowed(link: dict | None, uuid: str) -> bool:
+    if link is None:
+        return False
+    try:
+        limit = int(link.get("connection_limit", 0) or 0)
+    except Exception:
+        limit = 0
+    if limit <= 0:
+        return True
+    active = sum(1 for c in connections.values() if c.get("uuid") == uuid)
+    return active < limit
 
 
 def is_ip_allowed(
@@ -1773,9 +1816,14 @@ async def load_state():
             link.setdefault("sort_order", 0)
             link.setdefault("usage_history", [])
             link.setdefault("bundle_protocols", [])
+            protocol = normalize_protocol(str(link.get("protocol") or DEFAULT_PROTOCOL))
+            if protocol not in ONEX_VIP_PROTOCOLS:
+                protocol = "vless-ws"
+            link["protocol"] = protocol
             if link.get("all_protocols"):
-                # Upgrade old 3-protocol "all" links to the full ONEX VIP set.
-                link["bundle_protocols"] = [p for p in RAILWAY_SUB_PROTOCOLS]
+                link["bundle_protocols"] = list(ONEX_VIP_PROTOCOLS)
+            else:
+                link["bundle_protocols"] = [p for p in link.get("bundle_protocols", []) if str(p) in ONEX_VIP_PROTOCOLS]
             link.setdefault("ad_block_enabled", False)
             link["advanced"] = normalize_advanced_config(link.get("advanced"))
 
@@ -2026,7 +2074,7 @@ async def make_link(
             if p in BUNDLE_PROTOCOLS
         ],
         "advanced": normalize_advanced_config(advanced),
-        "native_protocols": [p for p in PROTOCOLS if p not in {"vless-ws", "xhttp-packet-up", "xhttp-stream-up", "xhttp-stream-one", "trojan-ws", "vmess-ws"}],
+        "native_protocols": [],
         "usage_history": [],
         "ad_block_enabled": bool(AD_BLOCKER.get("enabled") if ad_blocker is None else ad_blocker),
     }
@@ -7143,11 +7191,7 @@ async def get_connections(
 try:
     from onex.core.native_core import NativeCore, _protocol_safe_advanced
     NATIVE_CORE = NativeCore(DATA_DIR)
-     # Native protocols are advertised individually; the all-protocol subscription remains Railway-only.
-    for _native_protocol in getattr(NATIVE_CORE, "SUPPORTED", ()):
-        if _native_protocol not in PROTOCOLS:
-            PROTOCOLS.append(_native_protocol)
-    logger.info("Native sing-box backend loaded: %s", ", ".join(getattr(NATIVE_CORE, "SUPPORTED", ())))
+    logger.info("Native sing-box backend loaded for compatibility; ONEX VIP exposes relay protocols only")
 except Exception as exc:
     NATIVE_CORE = None
     logger.warning("Native protocol backend unavailable: %s", exc)
@@ -7471,28 +7515,8 @@ if "vmess-ws" not in PROTOCOLS:
 # Keep the panel/backend protocol order stable: the existing Railway-safe
 # transports remain first, while native listeners are appended afterwards.
 _PROTOCOL_ORDER = [
-    "vless-ws",
-    "xhttp-packet-up",
-    "xhttp-stream-up",
-    "xhttp-stream-one",
-    "vmess-ws",
-    "trojan-ws",
-    "vless-httpupgrade",
-    "siderail-vless-xhttp",
-    "trojan",
-    "shadowsocks",
-    "socks5",
-    "http",
-    "hysteria2",
-    "vless-reality",
-    "vless-grpc-reality",
-    "vmess",
-    "tuic",
-    "anytls",
-    "naive",
-    "shadowtls",
-    "snell",
-    "hysteria",
+    "vless-ws", "xhttp-packet-up", "xhttp-stream-up", "xhttp-stream-one",
+    "vmess-ws", "trojan-ws", "siderail-vless-xhttp",
 ]
 PROTOCOLS[:] = [p for p in _PROTOCOL_ORDER if p in PROTOCOLS]
 
@@ -14273,7 +14297,7 @@ async function loadGroupDetail(id){
 function renderGroupDetail(g,links){
   const pane=document.getElementById('groupDetailPane'); if(!pane)return;
   if(!g){pane.innerHTML='<div class="group-detail-empty"><div class="group-detail-empty-icon">◉</div><b>یک گروه را انتخاب کنید</b><span>برای مشاهده لینک اشتراک، پروتکل‌ها و کانفیگ‌های گروه</span></div>';return}
-  const protocols=(window.__protocolList&&window.__protocolList.length?window.__protocolList.map(x=>x.id):['vless-ws','xhttp-packet-up','xhttp-stream-up','xhttp-stream-one','trojan-ws','trojan','shadowsocks','socks5','http','hysteria2','vless-grpc-reality','wireguard']);
+  const protocols=(window.__protocolList&&window.__protocolList.length?window.__protocolList.map(x=>x.id):['vless-ws','siderail-vless-xhttp','xhttp-packet-up','xhttp-stream-up','xhttp-stream-one','vmess-ws','trojan-ws']);
   const current=new Set(__groupProtocols.length?__groupProtocols:protocols);
   const memberIds=new Set((g.link_ids||[]).map(String));
   const allLinks=Array.isArray(links)?links:[];
@@ -14455,11 +14479,8 @@ async function restoreBot(){
 /* ============================================================
    LIGHT STATIC 3D PROTOCOL PICKER
    ============================================================ */
-const RAILWAY_SUB_PROTOCOLS=['vless-ws','siderail-vless-xhttp','xhttp-packet-up','xhttp-stream-up','vmess-ws','trojan-ws','vless-httpupgrade','xhttp-stream-one'];
-const PROTOCOL_PICKER_GROUPS=[
-  {title:'ONEX VIP',subtitle:'۶ پروتکل اصلی ONEX',ids:['vless-ws','siderail-vless-xhttp','xhttp-packet-up','xhttp-stream-up','vmess-ws','trojan-ws','vless-httpupgrade','xhttp-stream-one'],kind:'vip'},
-  {title:'ONEX VPS',subtitle:'پروتکل‌های VPS متقدم',ids:['trojan','shadowsocks','socks5','http','hysteria2','vless-reality','vless-grpc-reality','vmess','tuic','anytls','naive','shadowtls','snell','hysteria'],kind:'vps'}
-];
+const RAILWAY_SUB_PROTOCOLS=['vless-ws','siderail-vless-xhttp','xhttp-packet-up','xhttp-stream-up','xhttp-stream-one','vmess-ws','trojan-ws'];
+const PROTOCOL_PICKER_GROUPS=[{title:'ONEX VIP',subtitle:'',ids:['vless-ws','siderail-vless-xhttp','xhttp-packet-up','xhttp-stream-up','xhttp-stream-one','vmess-ws','trojan-ws'],kind:'vip'}];
 const PROTOCOL_PICKER_NAMES={"vless-ws":"ONEX Base","siderail-vless-xhttp":"ONEX XHTTP","vmess-ws":"ONEX VMess","trojan-ws":"ONEX Trojan","vless-httpupgrade":"ONEX HTTPUpgrade","xhttp-packet-up":"ONEX Xhttp","xhttp-stream-up":"ONEX Gaming","xhttp-stream-one":"ONEX Stream","trojan":"Trojan","shadowsocks":"Shadowsocks","socks5":"SOCKS5","http":"HTTP Proxy","hysteria2":"Hysteria2","vless-reality":"VLESS Reality","vless-grpc-reality":"VLESS gRPC Reality","vmess":"VMess","tuic":"TUIC","anytls":"AnyTLS","naive":"NaiveProxy","shadowtls":"ShadowTLS","snell":"Snell","hysteria":"Hysteria"};
 const PROTOCOL_PICKER_DESCS={"vless-ws":"VLESS WebSocket","siderail-vless-xhttp":"VLESS XHTTP","vmess-ws":"VMess WebSocket","trojan-ws":"Trojan WebSocket","vless-httpupgrade":"VLESS HTTPUpgrade","xhttp-packet-up":"VLESS + XHTTP","xhttp-stream-up":"VLESS + XHTTP","xhttp-stream-one":"VLESS + XHTTP stream-one","trojan":"Trojan + TLS","shadowsocks":"Shadowsocks","socks5":"SOCKS5","http":"HTTP Proxy","hysteria2":"Hysteria2 + QUIC","vless-reality":"VLESS + Reality","vless-grpc-reality":"VLESS + gRPC + Reality","vmess":"VMess + TLS","tuic":"TUIC + QUIC","anytls":"AnyTLS + TLS","naive":"NaiveProxy + TLS","shadowtls":"ShadowTLS v3","snell":"Snell v5","hysteria":"Hysteria + QUIC"};
 const PROTOCOL_ICON_DATA={"vless-ws":"/api/protocol-icon/vless-ws.png?v=1.3.5","siderail-vless-xhttp":"/api/protocol-icon/vless-ws.png?v=1.3.5","vmess-ws":"/api/protocol-icon/vmess.png?v=1.3.5","trojan-ws":"/api/protocol-icon/trojan.png?v=1.3.5","vless-httpupgrade":"/api/protocol-icon/vless-ws.png?v=1.3.5","xhttp-packet-up":"/api/protocol-icon/xhttp-packet-up.png?v=1.3.5","xhttp-stream-up":"/api/protocol-icon/xhttp-stream-up.png?v=1.3.5","xhttp-stream-one":"/api/protocol-icon/xhttp-stream-one.png?v=1.3.5","trojan":"/api/protocol-icon/trojan.png?v=1.3.5","shadowsocks":"/api/protocol-icon/shadowsocks.png?v=1.3.5","socks5":"/api/protocol-icon/socks5.png?v=1.3.5","http":"/api/protocol-icon/http.png?v=1.3.5","hysteria2":"/api/protocol-icon/hysteria2.png?v=1.3.5","vless-reality":"/api/protocol-icon/vless-reality.png?v=1.3.5","vless-grpc-reality":"/api/protocol-icon/vless-grpc-reality.png?v=1.3.5","vmess":"/api/protocol-icon/vmess.png?v=1.3.5","tuic":"/api/protocol-icon/tuic.png?v=1.3.5","anytls":"/api/protocol-icon/anytls.png?v=1.3.5","naive":"/api/protocol-icon/naive.png?v=1.3.5","shadowtls":"/api/protocol-icon/shadowtls.png?v=1.3.5","snell":"/api/protocol-icon/snell.png?v=1.3.5","hysteria":"/api/protocol-icon/hysteria.png?v=1.3.5"};
@@ -15493,6 +15514,8 @@ def _front_proxy_ctx(internal_port: int) -> dict:
         "check_and_use": check_and_use,
         "throttle": throttle,
         "is_blocked": is_destination_blocked,
+        "is_destination_safe": is_destination_safe,
+        "is_connection_allowed": is_connection_allowed,
         "log": lambda msg: logger.warning("front proxy: %s", msg),
     }
 
