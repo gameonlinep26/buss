@@ -3951,8 +3951,6 @@ async def validate_advanced_config(request: Request, token=Depends(require_auth)
     if railway["railway"]:
         if protocol in {"vless-ws", "xhttp-packet-up", "xhttp-stream-up", "xhttp-stream-one"} and not railway["websocket_ready"]:
             warnings.append("Railway تشخیص داده شد ولی RAILWAY_PUBLIC_DOMAIN تنظیم نشده؛ لینک HTTPS/WS ممکن است قابل دسترسی نباشد")
-        if native and not railway["tcp_ready"]:
-            warnings.append("این پروتکل Native است؛ برای دسترسی مستقیم از Railway باید TCP Proxy و ONEX_RAILWAY_TCP_HOST/ONEX_RAILWAY_TCP_PORT تنظیم شود")
     preview = None
     return {"ok": not errors, "protocol": protocol, "native": False, "errors": errors, "warnings": warnings, "advanced": advanced, "preview": preview, "railway": railway}
 
@@ -10278,17 +10276,12 @@ html.light #page-configs .ocx-menu{background:color-mix(in srgb,var(--o-a) 6%,rg
     </div>
 
     <div class="cfgx-card">
-      <div class="cfgx-head"><span class="cfgx-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7l9 5 9-5-9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></svg></span><div><b>🚀 انتخاب پروتکل</b><small>پروتکل اصلی کانفیگ - ۶ پروتکل ONEX VIP</small></div><span class="cfgx-badge" id="cfgxProtoBadge">—</span></div>
+      <div class="cfgx-head"><span class="cfgx-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7l9 5 9-5-9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></svg></span><div><b>🚀 انتخاب پروتکل</b><small>پروتکل اصلی کانفیگ - ۷ پروتکل ONEX VIP</small></div><span class="cfgx-badge" id="cfgxProtoBadge">—</span></div>
       <div class="cfgx-proto-grid" id="cfgxProtoGrid"><div class="cfgx-empty">در حال بارگذاری پروتکل‌ها...</div></div>
-      <label class="all-proto-toggle cfgx-all-toggle" style="margin:10px 0 12px">
-        <span><b>ساخت همه پروتکل‌های Railway</b><small>یک کانفیگ بساز و هر ۶ پروتکل ONEX را داخل یک ساب قرار بده</small></span>
-        <input id="cAllProtocols" type="checkbox">
-        <i aria-hidden="true"></i>
-      </label>
     </div>
 
     <div class="cfgx-card">
-      <div class="cfgx-head"><span class="cfgx-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><path d="M17.5 14v7M14 17.5h7"/></svg></span><div><b>🔀 ترکیب پروتکل‌ها</b><small>هر تعداد پروتکل که انتخاب کنی، همه داخل یک ساب ساخته می‌شوند · ۶ پروتکل ONEX VIP</small></div><span class="cfgx-badge" id="cfgxBundleBadge">0</span></div>
+      <div class="cfgx-head"><span class="cfgx-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><path d="M17.5 14v7M14 17.5h7"/></svg></span><div><b>🔀 ترکیب پروتکل‌ها</b><small>هر تعداد پروتکل که انتخاب کنی، همه داخل یک ساب ساخته می‌شوند · ۷ پروتکل ONEX VIP</small></div><span class="cfgx-badge" id="cfgxBundleBadge">0</span></div>
       <div id="protocolBundleOptions" class="cfgx-bundle"></div>
       <small class="cfgx-note">پروتکل اصلی خودکار داخل ترکیب قرار می‌گیرد.</small>
     </div>
@@ -13326,7 +13319,6 @@ async function openConfigEditor(e,uid){
   __configEditOriginalExpiresAt=link.expires_at||null;__configEditOriginalDays=days;setConfigEditValue('cDays',days);
   setConfigEditValue('cIp',link.ip_limit||0);
   const speedBytes=Number(link.speed_limit_bytes||0);setConfigEditValue('cSpeed',speedBytes?Math.round((speedBytes*8/(1024*1024))*100)/100:0);
-  const all=document.getElementById('cAllProtocols');if(all)all.checked=!!link.all_protocols;
   const bundleSelected=new Set(Array.isArray(link.bundle_protocols)?link.bundle_protocols:[link.protocol]);
   document.querySelectorAll('#protocolBundleOptions input').forEach(x=>{x.checked=bundleSelected.has(x.value)});
   const adb=document.getElementById('cAdBlockEnabled');if(adb)adb.checked=!!link.ad_block_enabled;
@@ -13339,7 +13331,7 @@ async function openConfigEditor(e,uid){
 function collectConfigFormBody(){
   const advanced=advancedFormObject(),ports=advanced.ports.length?advanced.ports:[Number(configEditValue('cPort'))||443];
   const bundle=[...document.querySelectorAll('#protocolBundleOptions input:checked')].map(x=>x.value);
-  return {label:configEditValue('cName').trim()||undefined,protocol:configEditValue('cProto')||undefined,bundle_protocols:bundle,ad_block_enabled:!!document.getElementById('cAdBlockEnabled')?.checked,category_id:'0',sub_id:configEditValue('cSubGroup')||undefined,limit_value:Number(configEditValue('cLimit'))||0,limit_unit:configEditValue('cUnit')||'GB',expires_days:Number(configEditValue('cDays'))||0,ip_limit:Number(configEditValue('cIp'))||0,speed_limit_value:Number(configEditValue('cSpeed'))||0,speed_limit_unit:'MBIT',all_protocols:!!document.getElementById('cAllProtocols')?.checked,port:ports[0],fingerprint:advanced.fingerprint.value,alpn:advanced.tls.alpn,advanced};
+  return {label:configEditValue('cName').trim()||undefined,protocol:configEditValue('cProto')||undefined,bundle_protocols:bundle,ad_block_enabled:!!document.getElementById('cAdBlockEnabled')?.checked,category_id:'0',sub_id:configEditValue('cSubGroup')||undefined,limit_value:Number(configEditValue('cLimit'))||0,limit_unit:configEditValue('cUnit')||'GB',expires_days:Number(configEditValue('cDays'))||0,ip_limit:Number(configEditValue('cIp'))||0,speed_limit_value:Number(configEditValue('cSpeed'))||0,speed_limit_unit:'MBIT',all_protocols:false,port:ports[0],fingerprint:advanced.fingerprint.value,alpn:advanced.tls.alpn,advanced};
 }
 async function saveEditedConfig(){
   const uid=__configEditUid;if(!uid)return false;
@@ -14240,7 +14232,12 @@ function protocolIconMarkup(id){
 }
 function setupProtocolPickers(){['cProto','aProto'].forEach(id=>{const sel=document.getElementById(id);if(!sel)return;sel.classList.add('protocol-native');sel.style.setProperty('display','none','important');sel.setAttribute('aria-hidden','true');let trigger=sel.parentNode.querySelector(`.protocol-trigger[data-for="${id}"]`);if(!trigger){trigger=document.createElement('button');trigger.type='button';trigger.className='protocol-trigger';trigger.dataset.for=id;sel.parentNode.insertBefore(trigger,sel.nextSibling)}trigger.onclick=e=>{e.preventDefault();openProtocolPicker(id)};syncProtocolPicker(id)})}
 function syncProtocolPicker(id){const sel=document.getElementById(id),trigger=document.querySelector(`.protocol-trigger[data-for="${id}"]`);if(!sel||!trigger)return;const value=sel.value||'vless-ws';trigger.innerHTML=`<span class="protocol-trigger-main"><span class="protocol-trigger-icon">${protocolIconMarkup(value)}</span><span class="protocol-trigger-text"><span class="protocol-trigger-name">${esc(protocolPickerShort(value))}</span><span class="protocol-trigger-sub">${lang==='fa'?'برای تغییر، انتخاب کنید':'Tap to choose another protocol'}</span></span></span><span class="protocol-trigger-arrow">⌄</span>`}
-function syncAllProtocolToggle(){const sel=document.getElementById('cProto'),all=document.getElementById('cAllProtocols'),wrap=all?.closest('.all-proto-toggle');if(!sel||!all)return;const railway=RAILWAY_SUB_PROTOCOLS.includes(sel.value);if(!railway){all.checked=false;all.disabled=true;if(wrap){wrap.style.opacity='0.48';wrap.style.cursor='not-allowed';wrap.title=lang==='fa'?'این گزینه فقط برای پروتکل‌های Railway است':'This option is only for Railway protocols';}}else{all.disabled=false;if(wrap){wrap.style.opacity='1';wrap.style.cursor='pointer';wrap.title=lang==='fa'?'هر ۶ پروتکل ONEX VIP در یک ساب':'All 6 ONEX VIP protocols in one subscription';}}}
+function syncAllProtocolToggle(){}
+function toggleAllRailwayMode(){}
+function clearBundleProtocols(){
+  document.querySelectorAll('#protocolBundleOptions input').forEach(function(x){x.checked=false});
+  if(window.cfgxSync)window.cfgxSync();
+}
 
 function ensureProtocolPicker(){let bg=document.getElementById('protocolPickerBg');if(bg)return bg;bg=document.createElement('div');bg.id='protocolPickerBg';bg.className='protocol-picker-bg';bg.innerHTML=`<div class="protocol-picker" role="dialog" aria-modal="true"><div class="protocol-picker-head"><div class="protocol-picker-head-icon"><span>✦</span></div><div class="protocol-picker-head-text"><div class="protocol-picker-title">${lang==='fa'?'انتخاب پروتکل':'Select Protocol'}</div><div class="protocol-picker-subtitle">${lang==='fa'?'پروتکل موردنظر را انتخاب کنید':'Choose the protocol you want to use'}</div></div><button type="button" class="protocol-picker-close" id="protocolPickerClose">×</button></div><div class="protocol-picker-scroll" id="protocolPickerScroll"></div><div class="protocol-picker-foot"><div class="protocol-selected-info" id="protocolSelectedInfo">—</div><button type="button" class="protocol-picker-confirm" id="protocolPickerConfirm">${lang==='fa'?'تأیید و ادامه →':'Confirm & Continue →'}</button></div></div>`;document.body.appendChild(bg);bg.addEventListener('click',e=>{if(e.target===bg)closeProtocolPicker()});bg.querySelector('#protocolPickerClose').onclick=closeProtocolPicker;bg.querySelector('#protocolPickerConfirm').onclick=confirmProtocolPicker;return bg}
 function openProtocolPicker(targetId){const sel=document.getElementById(targetId);if(!sel)return;const bg=ensureProtocolPicker();__protocolPickerTarget=targetId;const current=sel.value||'vless-ws';const available=new Set([...sel.options].map(o=>o.value));const sections=PROTOCOL_PICKER_GROUPS.map(g=>{const ids=g.ids.filter(id=>available.has(id));if(!ids.length)return '';return `<section class="protocol-picker-section ${g.kind||''}"><div class="protocol-picker-section-head"><div><b>${esc(g.title)}</b><small>${esc(g.subtitle||'')}</small></div><span>${ids.length}</span></div><div class="protocol-grid protocol-grid-all">${ids.map(id=>`<button type="button" class="protocol-option ${id===current?'selected':''}" data-proto="${id}"><span class="protocol-option-radio"></span>${protocolIconMarkup(id)}<span class="protocol-option-name">${esc(protocolPickerShort(id))}</span><span class="protocol-option-desc">${id===current?(lang==='fa'?'انتخاب‌شده · ':'Selected · ')+(PROTOCOL_PICKER_DESCS[id]||''):(PROTOCOL_PICKER_DESCS[id]|| (lang==='fa'?'برای انتخاب کلیک کنید':'Tap to choose'))}</span></button>`).join('')}</div></section>`}).join('');const scroll=bg.querySelector('#protocolPickerScroll');scroll.innerHTML=sections;scroll.querySelectorAll('.protocol-option').forEach(btn=>btn.addEventListener('click',()=>chooseProtocol(btn.dataset.proto)));bg.querySelector('#protocolSelectedInfo').textContent=(lang==='fa'?'پروتکل انتخاب‌شده: ':'Selected: ')+protocolPickerShort(current);bg.classList.add('open');document.body.style.overflow='hidden'}
@@ -14799,16 +14796,14 @@ html.light #cfgx .advanced-section{background:color-mix(in srgb, rgb(23 23 23 / 
     var any=!!box.querySelector('input:checked');
     box.querySelectorAll('label').forEach(function(l){var i=l.querySelector('input');if(!i)return;var main=i.value===cur;l.classList.toggle('is-main',main);l.classList.toggle('is-on',i.checked||(main&&any))});
     var b=$('cfgxBundleBadge');if(b)b.textContent=String(bundleList().length);
-    document.querySelectorAll('#cfgx .all-proto-toggle').forEach(function(w){var i=w.querySelector('input');w.classList.toggle('is-checked',!!(i&&i.checked))});
   }
   function num(id){var v=Number(($(id)||{}).value);return isFinite(v)?v:NaN}
   function syncSummary(){
     var set=function(id,t){var e=$(id);if(e)e.textContent=t};
     var nm=(($('cName')||{}).value||'').trim();set('cfgxSumName',nm||'خودکار');
     var g=$('cSubGroup');set('cfgxSumGroup',g&&g.selectedIndex>-1&&g.options[g.selectedIndex]?g.options[g.selectedIndex].text:'بدون گروه');
-    var all=$('cAllProtocols'),sel=$('cProto'),pl;
-    if(all&&all.checked&&!all.disabled)pl='همه پروتکل‌های Railway در یک ساب';
-    else{var bl=bundleList();pl=bl.length?bl.map(nameOf).join('، ')+' ('+bl.length+')':(sel&&sel.value?nameOf(sel.value):'—')}
+    var sel=$('cProto'),pl;
+    var bl=bundleList();pl=bl.length?bl.map(nameOf).join('، ')+' ('+bl.length+')':(sel&&sel.value?nameOf(sel.value):'—');
     set('cfgxSumProto',pl);
     var lim=num('cLimit'),unit=(($('cUnit')||{}).value)||'GB',d=num('cDays'),ip=num('cIp'),sp=num('cSpeed');
     var f=function(v,s){return v>0?(v+(s?' '+s:'')):'نامحدود'};
